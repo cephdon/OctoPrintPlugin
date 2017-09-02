@@ -9,6 +9,7 @@ from UM.Preferences import Preferences
 
 import time
 import json
+import re
 
 ##      This plugin handles the connection detection & creation of output device objects for OctoPrint-connected printers.
 #       Zero-Conf is used to detect printers, which are saved in a dict.
@@ -37,6 +38,8 @@ class OctoPrintOutputDevicePlugin(OutputDevicePlugin):
         if not isinstance(self._manual_instances, dict):
             self._manual_instances = {}
 
+        self._name_regex = re.compile("OctoPrint instance (\".*\"\.|on )(.*)\.")
+
     addInstanceSignal = Signal()
     removeInstanceSignal = Signal()
     instanceListChanged = Signal()
@@ -57,14 +60,20 @@ class OctoPrintOutputDevicePlugin(OutputDevicePlugin):
 
         # Add manual instances from preference
         for name, properties in self._manual_instances.items():
-            additional_properties = {b"path": properties["path"].encode("utf-8"), b"manual": b"true"}
+            additional_properties = {
+                b"path": properties["path"].encode("utf-8"),
+                b"useHttps": b"true" if properties.get("useHttps", False) else b"false",
+                b'userName': properties["userName"].encode("utf-8"),
+                b'password': properties["password"].encode("utf-8"),
+                b"manual": b"true"
+            } # These additional properties use bytearrays to mimick the output of zeroconf
             self.addInstance(name, properties["address"], properties["port"], additional_properties)
 
-    def addManualInstance(self, name, address, port, path):
-        self._manual_instances[name] = {"address": address, "port": port, "path": path}
+    def addManualInstance(self, name, address, port, path, useHttps = False, userName = "", password = ""):
+        self._manual_instances[name] = {"address": address, "port": port, "path": path, "useHttps": useHttps, "userName": userName, "password": password}
         self._preferences.setValue("octoprint/manual_instances", json.dumps(self._manual_instances))
 
-        properties = { b"path": path.encode("utf-8"), b"manual": b"true" }
+        properties = { b"path": path.encode("utf-8"), b"useHttps": b"true" if useHttps else b"false", b'userName': userName.encode("utf-8"), b'password': password.encode("utf-8"), b"manual": b"true" }
 
         if name in self._instances:
             self.removeInstance(name)
@@ -135,7 +144,13 @@ class OctoPrintOutputDevicePlugin(OutputDevicePlugin):
     def _onServiceChanged(self, zeroconf, service_type, name, state_change):
         if state_change == ServiceStateChange.Added:
             key = name
-            name = name.replace("OctoPrint instance ", "")
+            result = self._name_regex.match(name)
+            if result:
+                if result.group(1) == "on ":
+                    name = result.group(2)
+                else:
+                    name = result.group(1) + result.group(2)
+
             Logger.log("d", "Bonjour service added: %s" % name)
 
             # First try getting info from zeroconf cache
